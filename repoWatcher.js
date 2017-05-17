@@ -21,6 +21,7 @@ class RepoWatcher {
     this.status = {}
     this.repos = options.names
     this.basePath = options.basePath
+    this.hooks = options.hooks
 
     const initBranches = Promise.all(this.repos.map((repo) => {
       return this.branchChanged(repo).then((branch) => {
@@ -44,7 +45,7 @@ class RepoWatcher {
 
     Promise.all([initBranches, initStatus])
       .then(() => {
-        this.print()
+        this.invokeHook('init')
       }).catch(console.error)
     this.init()
   }
@@ -52,20 +53,22 @@ class RepoWatcher {
   init() {
     // install filewatchers for each repo
     const parent = this
-    for (var repo of this.repos) {
+    for (const repo of this.repos) {
       const repoPath = path.join(this.basePath, repo);
       watch(repoPath, fileWatchOptions, function (evt, name) {
         if (/\.git\/HEAD$/.test(name)) {
           // branch changed
           parent.branchChanged(repo).then((branch) => {
             parent.branches[repo] = branch
-            parent.print()
+            parent.invokeHook('branch')
           })
         } else {
           // some file changed
-          gitStatus(repo).then((repoStatus) => {
+          if (parent.status[repo] === 'pending') return;
+          parent.status[repo] = 'pending'
+          parent.gitStatus(repo).then((repoStatus) => {
             parent.status[repo] = repoStatus
-            parent.print()
+            parent.invokeHook('status')
           })
         }
       })
@@ -82,7 +85,7 @@ class RepoWatcher {
   }
 
   gitStatus(repo) {
-    return process(`cd ${path.join(this.basePath, repo)} && git status --porcelain`)
+    return process(`cd ${path.join(this.basePath, repo)} && git status --porcelain=1`)
       .then((result) => {
       if (result.stderr) {
         throw new Error(`git status error in repo ${repo}: ${result.stderr}`)
@@ -93,16 +96,18 @@ class RepoWatcher {
     })
   }
 
-  print() {
-    console.log('\n\n')
-    this.repos.map((repo) => {
-      console.log(`${repo} on branch ${this.branches[repo]}`);
-      this.status[repo].map((fileStatus) => {
-        console.log(`${fileStatus}`);
-      })
-    })
+  invokeHook(key) {
+    if (this.hooks && this.hooks[key]) {
+      // only hook status if no git status is pending
+      if (key === 'status') {
+        const pending = this.repos.some((el, i, arr) => {
+          return this.status[el] === 'pending'
+        })
+        if (pending) return
+      }
+      this.hooks[key](this.branches, this.status)
+    }
   }
-
 }
 
 module.exports = RepoWatcher
